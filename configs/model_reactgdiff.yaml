@@ -1,0 +1,128 @@
+name: reactgdiff_procedure_graph_diffusion
+description: >
+  Small-scale discrete procedure-graph diffusion experiment for OpenExp procedure generation.
+  The input condition uses ReactXT-style prompt fields with molecule roles,
+  placeholders, SMILES, and duration/temperature lookup tables.
+
+input:
+  condition_encoding: reactxt_hash
+  field_dim: 128
+  condition_dim: 768
+  ngram_min: 2
+  ngram_max: 5
+  fields:
+    - REACTANT
+    - PRODUCT
+    - CATALYST
+    - SOLVENT
+    - Temperatures
+    - Durations
+
+targets:
+  graph_slots:
+    - operation_type
+    - multiple_material_references
+    - duration_temperature_ref
+    - quantity_slot_presence
+    - quantity_unit
+    - continuous_quantity_value
+
+model:
+  decoder_backend: graph_diffusion
+  graph_backbone: dit
+  diffusion_base: dit
+  diffusion_steps: 32
+  graph_diffusion_noise_schedule: cosine
+  graph_diffusion_sample_steps:
+  graph_diffusion_sample_mode: sample
+  graph_diffusion_sampler: posterior
+  graph_diffusion_sample_temperature: 1.0
+  graph_diffusion_pad_loss_weight: 0.25
+  graph_diffusion_quantity_mode: grounded
+  freeze_skeleton: true
+  use_slot_graph: true
+  use_material_pointer: true
+  use_numeric_grounding: true
+  graph_diffusion_timestep_sampling: uniform
+  graph_diffusion_endpoint_probability: 0.0
+  sample_batch_size: 64
+  dit_depth: 4
+  dit_heads: 8
+  hidden_dim: 512
+  latent_dim: 256
+  max_steps: 32
+  max_material_refs: 16
+  max_material_slots: 4
+  max_quantity_vocab: 256
+  prior_alignment_weight: 0.3
+  teacher_decoder_weight: 0.1
+  latent_norm_weight: 0.001
+  material_loss_weight: 0.8
+  condition_loss_weight: 0.9
+  condition_value_loss_weight: 0.0
+  quantity_value_loss_weight: 0.25
+  structure_loss_weight: 0.2
+  numeric_value_clip: 8.0
+  sampling_strategy: balanced
+  sample_weight_max: 8.0
+  skeleton_weight_max: 3.0
+  operation_weighting: balanced
+  operation_weight_alpha: 0.5
+  operation_weight_max: 4.0
+  gradient_clip_norm: 1.0
+  quantity_gate_loss_weight: 0.7
+  material_none_weight: 0.35
+  material_present_weight: 1.6
+  condition_none_weight: 0.45
+  condition_present_weight: 2.5
+  quantity_negative_weight: 0.9
+  quantity_positive_weight: 1.0
+  quantity_gate_threshold: 0.65
+  condition_probability_threshold: 0.05
+  use_structure_length: true
+  min_structure_steps: 2
+  argument_filler_backend: none
+  argument_filler_epochs: 8
+  argument_filler_batch_size: 256
+  argument_filler_learning_rate: 0.0003
+  argument_filler_hidden_dim: 256
+  argument_filler_layers: 4
+  argument_filler_heads: 8
+  argument_max_length: 160
+  argument_vocab_size: 192
+
+training:
+  train_path: data/processed/openexp_sample/splits/train.jsonl
+  val_path: data/processed/openexp_sample/splits/val.jsonl
+  epochs: 50
+  batch_size: 64
+  learning_rate: 0.0003
+  seed: 13
+  device: cpu
+  include_numeric_evidence_input: true
+  skeleton_mix:
+    gold_ratio: 0.5
+    predicted_ratio: 0.3
+    corrupted_ratio: 0.2
+
+numeric:
+  enabled: true
+  free_generation: false
+  allow_missing_when_no_evidence: true
+  normalize_units: true
+  use_value_bucket: true
+
+eval:
+  compute_number_normalized_lev: true
+  compute_slot_metrics: true
+  compute_numeric_metrics: true
+  skeleton_source: predicted
+
+outputs:
+  checkpoint: outputs/checkpoints/reactgdiff_graph.pt
+  validation_predictions: outputs/predictions/reactgdiff_graph_val.jsonl
+  validation_metrics: outputs/metrics/reactgdiff_graph_val.json
+
+decoder:
+  type: procedure_graph_diffusion
+  compile_mode: exact

@@ -1,0 +1,42 @@
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments and build artifacts
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Local editor and agent configuration
+.idea/
+.vscode/
+.codex
+.agents/
+.git-local/
+
+# Local environment and logs
+.env
+.env.*
+*.log
+
+# Data are managed outside Git.
+data/
+
+# Generated checkpoints, predictions, metrics, and visualizations.
+# Keep the one source experiment currently stored under outputs/.
+outputs/*
+!outputs/experiments/
+outputs/experiments/*
+!outputs/experiments/*.py
+
+# Large model and archive formats (defense in depth)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.tar
+*.tar.gz
+*.zip

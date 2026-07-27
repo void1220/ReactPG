@@ -1,0 +1,27 @@
+primary_small_experiment:
+  metric: text_gap
+  definition: 1 - normalized_character_levenshtein_similarity
+  direction: lower_is_better
+
+reported:
+  mean_text_gap:
+    direction: lower_is_better
+  mean_levenshtein_similarity:
+    direction: higher_is_better
+  levenshtein_75_rate:
+    threshold: 0.75
+    direction: higher_is_better
+  exact_match_rate:
+    direction: higher_is_better
+
+prediction_keys:
+  prediction:
+    - predicted_actions
+    - prediction
+    - decoded_actions
+    - output
+  reference:
+    - reference_actions
+    - reference
+    - target_actions
+    - target

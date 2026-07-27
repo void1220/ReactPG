@@ -1,0 +1,2 @@
+"""Structural completeness rules placeholder."""
+

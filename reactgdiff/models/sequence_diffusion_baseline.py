@@ -1,0 +1,2 @@
+"""Sequence diffusion baseline placeholder."""
+

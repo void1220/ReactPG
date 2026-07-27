@@ -1,0 +1,2 @@
+"""ReactGDiff package scaffold."""
+

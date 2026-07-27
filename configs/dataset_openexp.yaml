@@ -1,0 +1,48 @@
+dataset: OpenExp
+raw_path: data/raw/OpenExp.json
+processed_dir: data/processed/openexp
+
+cleaning:
+  required_fields:
+    - index
+    - REACTANT
+    - PRODUCT
+    - actions
+    - source
+    - extracted_molecules
+    - molecules
+    - score
+  require_known_action_vocabulary: true
+  require_resolved_material_refs: true
+  require_resolved_duration_refs: true
+  require_resolved_temperature_refs: true
+  require_yield_action: true
+  require_single_product: true
+
+splits:
+  method: deterministic_sha1_reaction_key
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+  train_path: data/processed/openexp/splits/train.jsonl
+  val_path: data/processed/openexp/splits/val.jsonl
+  test_path: data/processed/openexp/splits/test.jsonl
+
+outputs:
+  main: data/processed/openexp/main.jsonl
+  rejected: data/processed/openexp/rejected.jsonl
+  summary: data/processed/openexp/summary.json
+  buckets_dir: data/processed/openexp/buckets
+
+scale_buckets:
+  small: action_count <= 8
+  medium: 9 <= action_count <= 13
+  large: action_count >= 14
+
+special_buckets:
+  numeric_heavy: quantity_component_count >= 14 OR quantity_count >= 10 OR at least 4 quantity types
+  condition_heavy: condition_ref_count >= 5 OR timed_temperature_step_count >= 3 OR duration_ref_count >= 3 OR temperature_ref_count >= 3
+  hard_numeric_condition: numeric_heavy OR condition_heavy
+  multi_reference: unique_material_ref_count >= 7 OR material_ref_count >= 10 OR material_entity_count >= 8
+  branch_workup: branch_op_count >= 4 OR workup_op_count >= 8 with at least two branch ops
+  complex_overall: any special bucket OR complexity_score >= 31

@@ -1,0 +1,8 @@
+# Tested with Python 3.10.15.
+# Install a PyTorch build matching the target CUDA driver when using a GPU.
+torch==2.5.1
+transformers==4.48.2
+sentencepiece==0.2.0
+
+# Test runner used by tests/.
+pytest==8.3.4

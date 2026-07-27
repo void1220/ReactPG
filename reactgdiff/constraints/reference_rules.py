@@ -1,0 +1,2 @@
+"""Reference consistency rules placeholder."""
+
