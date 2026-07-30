@@ -1,8 +1,8 @@
-# ReactGDiff
+# ReactPG
 
-**ReactGDiff: Verifiable Generation of Chemical Experimental Procedures via Skeleton-Conditioned Graph Diffusion**
+**ReactPG: Verifiable Generation of Chemical Experimental Procedures via Skeleton-Conditioned Graph Diffusion**
 
-ReactGDiff 将 OpenExp 实验步骤预测拆成两个阶段：
+ReactPG 将 OpenExp 实验步骤预测拆成两个阶段：
 
 1. 自回归序列模型根据反应输入预测操作骨架；
 2. 离散图扩散模型在固定骨架上补全材料指针、条件、数量需求、单位和数值证据指针，再通过确定性编译器生成 OpenExp 风格步骤文本。
