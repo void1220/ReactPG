@@ -23,7 +23,7 @@ dist/
 *.log
 
 # Data are managed outside Git.
-data/
+/data/
 
 # Generated checkpoints, predictions, metrics, and visualizations.
 # Keep the one source experiment currently stored under outputs/.
