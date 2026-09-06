@@ -83,7 +83,16 @@ def main():
     p.add_argument('--seed', type=int, default=19)
     p.add_argument('--device', default='cuda')
     p.add_argument('--output')
+    p.add_argument('--arm', choices=['both','free','assisted'], default='both')
+    p.add_argument('--resume-run', help='Previous diagnostic result directory; resume weights with a fresh optimizer')
     args = p.parse_args()
+    previous = None
+    if args.resume_run:
+        previous = json.loads((Path(args.resume_run)/'report.json').read_text())
+        # Preserve the original experiment and samples. Only duration, arm and output change.
+        for key, value in previous['config'].items():
+            if key not in ('epochs','arm','resume_run','output'):
+                setattr(args, key, value)
     if min(args.train_records,args.validation_records,args.epochs,args.batch_size,args.accumulation,args.max_length) < 1 or not math.isfinite(args.lr) or args.lr <= 0:
         p.error('Counts and learning rate must be positive and finite')
     train, val = list(read_jsonl(args.train)), list(read_jsonl(args.validation))
@@ -109,8 +118,26 @@ def main():
                       'Training fit is not generalization. Gold graphs remove upstream prediction errors.'],
         'train_sha256':digest(args.train), 'validation_sha256':digest(args.validation),
         'train_ids':[r['index'] for r in chosen_train], 'validation_ids':[r['index'] for r in chosen_val], 'arms':{}}
+    if previous:
+        for key in ('train_sha256','validation_sha256','train_ids','validation_ids'):
+            if report[key] != previous[key]:
+                raise ValueError('Resume data mismatch: '+key)
+        report['resume_from'] = str(Path(args.resume_run).resolve())
+        report['optimizer_resume'] = 'fresh_optimizer_previous_state_not_saved'
     save(output/'report.json', report)
     for arm, include_source in [('source_free',False),('source_assisted_DIAGNOSTIC',True)]:
+        if args.arm == 'free' and include_source or args.arm == 'assisted' and not include_source:
+            continue
+        initial_model = args.base_model
+        prior_epochs = 0
+        if previous:
+            if arm not in previous['arms']:
+                raise ValueError('Requested arm absent from previous run: '+arm)
+            prior_epochs = previous['arms'][arm]['curve'][-1]['epoch']
+            initial_model = str(Path(args.resume_run)/arm/'model')
+            if not Path(initial_model).is_dir():
+                raise FileNotFoundError(initial_model)
+            print(f'Resuming {arm} from epoch {prior_epochs}; fresh optimizer', flush=True)
         arm_dir = output/arm
         arm_dir.mkdir()
         training = examples_from_records(chosen_train, codec, include_source)
@@ -129,18 +156,19 @@ def main():
         report['arms'][arm] = entry
         def callback(model, tokenizer, epoch, loss, steps):
             metrics, rows = evaluate(model,tokenizer,training,args.batch_size,args.max_length,args.device)
-            point = {'epoch':epoch, 'optimizer_steps':steps, 'train_loss':loss, 'train':metrics}
-            write_jsonl(arm_dir/f'train_epoch_{epoch:03d}.jsonl',rows)
+            point = {'epoch':prior_epochs+epoch, 'additional_epoch':epoch, 'optimizer_steps':steps, 'train_loss':loss, 'train':metrics}
+            write_jsonl(arm_dir/f'train_epoch_{prior_epochs+epoch:03d}.jsonl',rows)
             if epoch in (0,args.epochs):
                 val_metrics, val_rows = evaluate(model,tokenizer,validation,args.batch_size,args.max_length,args.device)
                 point['validation'] = val_metrics
-                write_jsonl(arm_dir/f'validation_epoch_{epoch:03d}.jsonl',val_rows)
+                write_jsonl(arm_dir/f'validation_epoch_{prior_epochs+epoch:03d}.jsonl',val_rows)
             entry['curve'].append(point)
             save(output/'report.json',report)
-            print(f'{arm} epoch={epoch} steps={steps} train_valid={metrics["valid_numeric_rate"]:.3f} train_exact={metrics["numeric_exact_rate"]:.3f}', flush=True)
-        entry['training'] = train_parameters(args.base_model,training,arm_dir/'model',epochs=args.epochs,
+            print(f'{arm} epoch={prior_epochs+epoch} steps={steps} train_valid={metrics["valid_numeric_rate"]:.3f} train_exact={metrics["numeric_exact_rate"]:.3f}', flush=True)
+        entry['training'] = train_parameters(initial_model,training,arm_dir/'model',epochs=args.epochs,
             batch_size=args.batch_size,accumulation=args.accumulation,lr=args.lr,max_length=args.max_length,
-            seed=args.seed,device=args.device,metadata={'diagnostic_only':True,'include_source':include_source,
+            seed=args.seed,device=args.device,metadata={'diagnostic_only':True,'include_source':include_source,'prior_epochs':prior_epochs,
+                'initialization_kind':'continued_diagnostic_weights' if previous else 'original_pretrained',
                 'train_ids':report['train_ids'],'graph_input':'gold_ORACLE'},diagnostic_callback=callback)
         save(output/'report.json', report)
         gc.collect()

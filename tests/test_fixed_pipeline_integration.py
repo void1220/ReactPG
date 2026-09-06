@@ -112,3 +112,14 @@ def test_full_fixed_pipeline_offline(tmp_path, monkeypatch):
         assert arm['training']['optimizer_steps'] == 1
         assert arm['curve'][1]['validation']['count'] == 1
     assert (fit_output/'summary.md').is_file()
+
+    resume_output = tmp_path/'numeric_fit_resume'
+    monkeypatch.setattr(sys, 'argv', ['numeric_fit', '--resume-run',str(fit_output),
+        '--arm','assisted','--epochs','1','--output',str(resume_output)])
+    fit_main()
+    resumed = json.loads((resume_output/'report.json').read_text())
+    assert list(resumed['arms']) == ['source_assisted_DIAGNOSTIC']
+    arm = resumed['arms']['source_assisted_DIAGNOSTIC']
+    assert [x['epoch'] for x in arm['curve']] == [1,2]
+    assert arm['training']['initialization_kind'] == 'continued_diagnostic_weights'
+    assert resumed['train_ids'] == fit_report['train_ids']
