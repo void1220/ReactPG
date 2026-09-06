@@ -71,7 +71,7 @@ def load_parameter_base(model_name, device='cpu'):
 
 
 def train_parameters(base_model, examples, output, *, epochs=1, batch_size=2, accumulation=8,
-                     lr=2e-5, max_length=1024, seed=19, device='cpu', metadata=None):
+                     lr=2e-5, max_length=1024, seed=19, device='cpu', metadata=None, diagnostic_callback=None):
     import torch
     from torch.utils.data import DataLoader
     if not examples: raise ValueError('No numeric training slots')
@@ -84,6 +84,9 @@ def train_parameters(base_model, examples, output, *, epochs=1, batch_size=2, ac
     model.gradient_checkpointing_enable()
     lengths = prompt_lengths(tokenizer, [x['prompt'] for x in examples], max_length)
     print(f'Parameter prompts: count={len(lengths)} max_tokens={max(lengths)} budget={max_length}; no truncation', flush=True)
+    if diagnostic_callback is not None:
+        diagnostic_callback(model, tokenizer, 0, None, 0)
+    optimizer_steps = 0
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     generator = torch.Generator().manual_seed(seed)
     loader = DataLoader(examples, batch_size=batch_size, shuffle=True, generator=generator, collate_fn=lambda rows: rows)
@@ -102,12 +105,15 @@ def train_parameters(base_model, examples, output, *, epochs=1, batch_size=2, ac
             if (i+1) % accumulation == 0 or i+1 == len(loader):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step(); optimizer.zero_grad()
+                optimizer_steps += 1
             if i % 20 == 0: print(f'Parameter train epoch={epoch+1} batch={i+1}/{len(loader)} loss={float(loss):.4f}', flush=True)
         losses.append(total/len(loader))
+        if diagnostic_callback is not None:
+            diagnostic_callback(model, tokenizer, epoch+1, losses[-1], optimizer_steps)
     model.config.use_cache = True
     model.save_pretrained(output); tokenizer.save_pretrained(output)
     info = {'initialization': str(base_model), 'initialization_kind': 'original_pretrained', 'examples': len(examples), 'epochs': epochs,
-            'train_loss': losses, 'seed': seed, 'max_length': max_length,
+            'train_loss': losses, 'optimizer_steps': optimizer_steps, 'learning_rate': lr, 'batch_size': batch_size, 'accumulation': accumulation, 'seed': seed, 'max_length': max_length,
             'prompt_version': PROMPT_VERSION, 'prompt_max_tokens': max(lengths),
             'prompt_mean_tokens': sum(lengths)/len(lengths),
             'selection': 'fixed_epochs_no_validation_selection', **(metadata or {})}

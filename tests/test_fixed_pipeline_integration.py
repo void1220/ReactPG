@@ -98,3 +98,17 @@ def test_full_fixed_pipeline_offline(tmp_path, monkeypatch):
     fresh = predict_skeleton(sk, [input_record({**record, 'index': 2})], 'cpu', 1)
     assert len(fresh) == 1 and fresh[0]['index'] == 2
     assert 'predicted_skeleton' in fresh[0]
+
+    from scripts.run_numeric_fit_diagnostic import main as fit_main
+    fit_output = tmp_path/'numeric_fit'
+    monkeypatch.setattr(sys, 'argv', ['numeric_fit', '--train',str(train),'--validation',str(val),
+        '--graph-checkpoint',str(gp),'--base-model',str(base_path),'--train-records','1',
+        '--validation-records','1','--epochs','1','--batch-size','1','--device','cpu','--output',str(fit_output)])
+    fit_main()
+    fit_report = json.loads((fit_output/'report.json').read_text())
+    assert len(fit_report['arms']) == 2
+    for arm in fit_report['arms'].values():
+        assert [x['epoch'] for x in arm['curve']] == [0,1]
+        assert arm['training']['optimizer_steps'] == 1
+        assert arm['curve'][1]['validation']['count'] == 1
+    assert (fit_output/'summary.md').is_file()
