@@ -59,6 +59,8 @@ def main():
     p.add_argument('--skeleton-checkpoint', default='outputs/checkpoints/openexp_small_hash_v1_seq2seq_skeleton.pt')
     p.add_argument('--skeleton-cache', default='outputs/skeleton/openexp_small_hash_v1_seq2seq_skeleton_val.jsonl')
     p.add_argument('--regenerate-skeleton', action='store_true')
+    p.add_argument('--parameter-base-model', default='laituan245/molt5-base',
+                   help='Original pretrained HF model name or local directory (must be cached locally)')
     p.add_argument('--parameter-model', help='Existing HF numeric model directory; otherwise train in output directory')
     p.add_argument('--parameter-train-records', type=int, default=2048)
     p.add_argument('--parameter-max-length', type=int, default=1024)
@@ -209,13 +211,17 @@ def main():
                 value = target[request['step']]['quantity_slots'][request['quantity']].get('value')
                 if value is not None:
                     examples.append({'prompt': parameter_prompt(r, slots, request, args.include_source), 'target': f'{value:.8g}'})
-        report['parameter_training'] = train_parameters(args.skeleton_checkpoint, examples, parameter_path,
+        report['parameter_training'] = train_parameters(args.parameter_base_model, examples, parameter_path,
             epochs=args.parameter_epochs, batch_size=min(args.batch_size,2), device=args.device, seed=args.seed, max_length=args.parameter_max_length,
             metadata={'include_source': args.include_source, 'train_file_sha256': report['data']['train_sha256'], 'train_ids': [r['index'] for r in subset]})
     else:
         metadata_path = Path(parameter_path)/'parameter_training.json'
         if not metadata_path.is_file(): raise ValueError('Parameter model lacks training provenance')
         meta = json.loads(metadata_path.read_text())
+        if meta.get('initialization_kind') != 'original_pretrained':
+            raise ValueError('Parameter model was not initialized from original pretrained weights; train a new filler')
+        if meta.get('initialization') != str(args.parameter_base_model):
+            raise ValueError('Parameter base model mismatch; specify its original --parameter-base-model')
         if meta.get('prompt_version') != PROMPT_VERSION: raise ValueError('Parameter prompt version changed: train a new filler; do not reuse v1 checkpoint')
         if bool(meta.get('include_source')) != args.include_source: raise ValueError('Parameter model input policy mismatch')
         if set(map(str, meta.get('train_ids', []))) & set(eval_by_id): raise ValueError('Parameter model trained on validation IDs')

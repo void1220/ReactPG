@@ -28,7 +28,18 @@ def test_full_fixed_pipeline_offline(tmp_path, monkeypatch):
     tokenizer=PreTrainedTokenizerFast(tokenizer_object=backend,pad_token='<pad>',eos_token='</s>',unk_token='<unk>',model_input_names=['input_ids','attention_mask'])
     tokenizer.save_pretrained(base_path)
     config=T5Config(vocab_size=len(vocab),d_model=16,d_ff=32,d_kv=8,num_layers=1,num_decoder_layers=1,num_heads=2,decoder_start_token_id=0,pad_token_id=0,eos_token_id=1)
-    config.save_pretrained(base_path)
+    original = T5ForConditionalGeneration(config)
+    original.save_pretrained(base_path)
+    # Verify actual saved pretrained tensors are loaded; skeleton loading is forbidden here.
+    from reactgdiff.pipeline import specialist
+    with monkeypatch.context() as isolated:
+        def forbidden(*args, **kwargs):
+            raise AssertionError('Numeric initialization must not load skeleton weights')
+        isolated.setattr(specialist, 'load_skeleton', forbidden)
+        loaded, _ = specialist.load_parameter_base(str(base_path))
+        assert all(torch.equal(value, loaded.state_dict()[key])
+                   for key, value in original.state_dict().items())
+        del loaded
     record={'index':1,'REACTANT':['CCO'],'PRODUCT':['CC=O'],'CATALYST':[],'SOLVENT':[],
             'extracted_molecules':{'CCO':'$1$','CC=O':'$-1$'},'extracted_duration':{},'extracted_temperature':{},
             'actions':'ADD $1$ (5 g) ; YIELD $-1$.','source':'5 g added'}
@@ -51,11 +62,13 @@ def test_full_fixed_pipeline_offline(tmp_path, monkeypatch):
     output=tmp_path/'run'
     monkeypatch.setattr(sys,'argv',['run_fixed_pipeline','--input',str(val),'--train',str(train),
           '--graph-checkpoint',str(gp),'--skeleton-checkpoint',str(sk),'--skeleton-cache',str(cache),
-          '--device','cpu','--limit','1','--parameter-train-records','1','--batch-size','1',
+          '--parameter-base-model',str(base_path),'--device','cpu','--limit','1','--parameter-train-records','1','--batch-size','1',
           '--sample-steps','2','--quantity-threshold','0','--output',str(output)])
     main()
     result=json.loads((output/'report.json').read_text())
     assert result['allow_operation_completion'] is False
+    assert result['parameter_training']['initialization_kind'] == 'original_pretrained'
+    assert result['parameter_training']['initialization'] == str(base_path)
     assert result['parameter_training']['examples'] == 1
     assert result['parameter_training']['train_ids'] == [1]
     assert len(result['stages']) == 8
@@ -70,6 +83,16 @@ def test_full_fixed_pipeline_offline(tmp_path, monkeypatch):
     monkeypatch.setattr(sys,'argv',argv)
     main()
     assert (output2/'report.json').is_file()
+    # A previous skeleton-initialized filler must not silently enter this comparison.
+    import pytest
+    metadata_path = output/'parameter_model'/'parameter_training.json'
+    old_meta = json.loads(metadata_path.read_text())
+    old_meta.pop('initialization_kind')
+    metadata_path.write_text(json.dumps(old_meta))
+    argv[argv.index('--output')+1] = str(tmp_path/'reject_old')
+    monkeypatch.setattr(sys, 'argv', argv)
+    with pytest.raises(ValueError, match='original pretrained weights'):
+        main()
     from reactgdiff.pipeline.specialist import predict_skeleton
     from reactgdiff.pipeline.contracts import input_record
     fresh = predict_skeleton(sk, [input_record({**record, 'index': 2})], 'cpu', 1)

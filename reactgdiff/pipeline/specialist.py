@@ -62,7 +62,15 @@ def predict_skeleton(checkpoint, records, device, batch_size=4):
     return rows
 
 
-def train_parameters(checkpoint, examples, output, *, epochs=1, batch_size=2, accumulation=8,
+def load_parameter_base(model_name, device='cpu'):
+    """Load original pretrained weights, independently of the skeleton checkpoint."""
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+    tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_name, local_files_only=True)
+    return model.to(device), tokenizer
+
+
+def train_parameters(base_model, examples, output, *, epochs=1, batch_size=2, accumulation=8,
                      lr=2e-5, max_length=1024, seed=19, device='cpu', metadata=None):
     import torch
     from torch.utils.data import DataLoader
@@ -70,9 +78,8 @@ def train_parameters(checkpoint, examples, output, *, epochs=1, batch_size=2, ac
     output = Path(output)
     if output.exists(): raise FileExistsError(output)
     random.seed(seed); torch.manual_seed(seed)
-    wrapper, tokenizer, _, payload = load_skeleton(checkpoint, 'cpu')
-    model = wrapper.base_model.to(device)
-    del wrapper, payload
+    print(f'Parameter initialization: original pretrained model {base_model}', flush=True)
+    model, tokenizer = load_parameter_base(base_model, device)
     model.config.use_cache = False
     model.gradient_checkpointing_enable()
     lengths = prompt_lengths(tokenizer, [x['prompt'] for x in examples], max_length)
@@ -99,7 +106,7 @@ def train_parameters(checkpoint, examples, output, *, epochs=1, batch_size=2, ac
         losses.append(total/len(loader))
     model.config.use_cache = True
     model.save_pretrained(output); tokenizer.save_pretrained(output)
-    info = {'initialization': str(checkpoint), 'examples': len(examples), 'epochs': epochs,
+    info = {'initialization': str(base_model), 'initialization_kind': 'original_pretrained', 'examples': len(examples), 'epochs': epochs,
             'train_loss': losses, 'seed': seed, 'max_length': max_length,
             'prompt_version': PROMPT_VERSION, 'prompt_max_tokens': max(lengths),
             'prompt_mean_tokens': sum(lengths)/len(lengths),

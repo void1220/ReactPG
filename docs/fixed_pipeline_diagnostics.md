@@ -9,7 +9,7 @@
 
 ```bash
 python -m pytest -q tests
-python -u scripts/run_fixed_pipeline.py --limit 32 --parameter-train-records 256 --batch-size 2
+python -u scripts/run_fixed_pipeline.py --limit 32 --parameter-train-records 256 --batch-size 2 --parameter-max-length 2048
 ```
 
 默认使用：
@@ -21,9 +21,11 @@ python -u scripts/run_fixed_pipeline.py --limit 32 --parameter-train-records 256
 
 上述路径可通过 `--help` 中的参数修改。已有模型和旧结果不覆盖。新文件保存在唯一的 `outputs/fixed_pipeline/<时间>/`；同名目录会拒绝覆盖。
 
-首轮自动从**训练集**抽取 256 条记录，使用其全部可解析数量槽位，把现有 MolT5 骨架检查点复制为独立数值模型并训练 1 epoch。该小训练用于检验接口与学习信号，不是最终性能结论。训练按每 20 个 batch 打印进度。
+首轮自动从**训练集**抽取 256 条记录，使用其全部可解析数量槽位，从原始专业预训练模型 `laituan245/molt5-base` 初始化独立数值模型并训练 1 epoch（不加载骨架微调权重，也不是随机初始化）。该小训练用于检验接口与学习信号，不是最终性能结论。训练按每 20 个 batch 打印进度。
 
-后续可增大 `--parameter-train-records` 与 `--parameter-epochs`；或指定 `--parameter-model outputs/fixed_pipeline/<时间>/parameter_model` 复用数值模型。参数模型记录训练 ID、输入策略和数据哈希，复用时检查与验证集交叉。
+默认仅从本机 Hugging Face 缓存读取预训练权重；若未缓存则明确报错，不自动退回骨架或随机权重。可用 `--parameter-base-model /本地原始MolT5目录` 指定原始模型。骨架阶段继续使用已有骨架检查点或缓存。本次对照保持 256 条训练记录、1 epoch、32 条验证记录及其他设置一致。
+
+后续可增大 `--parameter-train-records` 与 `--parameter-epochs`；或指定 `--parameter-model outputs/fixed_pipeline/<时间>/parameter_model` 复用数值模型。参数模型记录训练 ID、输入策略和数据哈希，复用时检查与验证集交叉、原始模型及初始化类型。早期从骨架权重初始化的数值模型会被拒绝复用；请重新训练。
 
 使用 `--regenerate-skeleton` 可明确重新运行第一阶段；缓存模式无法追溯历史 prompt 的所有细节，报告会标注此限制。
 
