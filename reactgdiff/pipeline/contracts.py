@@ -27,7 +27,8 @@ def discrete_slots(slots):
                     'temperature_ref': slot.get('temperature_ref', ''),
                     'condition_values': {},
                     'quantity_slots': [dict(slot_id=q.get('slot_id', j), unit=q['unit'],
-                                            numeric_type=q.get('numeric_type', 'amount'), value=None,
+                                            numeric_type=q.get('numeric_type', 'amount'),
+                                            material_ref=q.get('material_ref', '') if q.get('material_ref', '') in refs else '', value=None,
                                             text='<NUMERIC_SLOT_MISSING>', source='unfilled')
                                        for j, q in enumerate(slot.get('quantity_slots') or [])]})
     return out
@@ -38,7 +39,7 @@ def requests(slots):
             for i, s in enumerate(slots) for j, q in enumerate(s['quantity_slots'])]
 
 
-PROMPT_VERSION = "compact_discrete_graph_v2"
+PROMPT_VERSION = "material_bound_graph_v3"
 
 
 def parameter_prompt(record, slots, request, include_source=False):
@@ -56,8 +57,26 @@ def parameter_prompt(record, slots, request, include_source=False):
         'duration_map': record.get('extracted_duration') or {},
         'temperature_map': record.get('extracted_temperature') or {},
     }
+    step = slots[request['step']]
+    quantity = step['quantity_slots'][request['quantity']]
+    refs = list(dict.fromkeys(step.get('material_refs') or []))
+    bound = quantity.get('material_ref', '')
+    if bound not in refs:
+        bound = ''
+    origin = 'explicit_graph_binding' if bound else 'unresolved'
+    if not bound and len(refs) == 1:
+        bound, origin = refs[0], 'single_material_in_step'
+    material_map = record.get('extracted_molecules') or {}
+    payload['requested_context'] = {
+        'material_ref': bound or None, 'binding': origin,
+        'material_identifiers': [k for k,v in material_map.items() if v == bound] if bound else [],
+        'step_materials': refs, 'quantity_position_in_step': request['quantity'],
+        'same_unit_positions': [j for j,q in enumerate(step.get('quantity_slots') or []) if q['unit'] == request['unit']],
+        'previous_operation': slots[request['step']-1]['operation_type'] if request['step'] else None,
+        'next_operation': slots[request['step']+1]['operation_type'] if request['step']+1 < len(slots) else None,
+    }
     if include_source: payload['source'] = str(record.get('source', ''))
-    return 'Predict only the numeric value in the requested unit, or ABSTAIN.\n' + json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+    return 'Predict only the numeric value for the requested material and step in the requested unit, or ABSTAIN. Do not copy a value for another material or step.\n' + json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
 
 
 def parse_proposal(text):

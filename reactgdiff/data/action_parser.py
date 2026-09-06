@@ -233,3 +233,17 @@ def is_quantity_text(raw: str) -> bool:
     if "yield" in normalized and re.search(r"\d", normalized):
         return True
     return bool(re.search(r"\d", normalized) and QUANTITY_UNIT_RE.search(normalized))
+
+
+def quantity_material_bindings(text: str) -> list[str]:
+    """Conservative structural labels: only a material immediately before a quantity group.
+
+    Multiple components in one group share the material. Ambiguous groups remain unbound.
+    No numerical values are used to choose a material.
+    """
+    bindings = []
+    for match in PAREN_RE.finditer(text):
+        quantities = split_quantity_text(match.group(1).strip())
+        adjacent = re.search(r"(\$-?\d+\$)\s*$", text[:match.start()])
+        bindings.extend([adjacent.group(1) if adjacent else ''] * len(quantities))
+    return bindings

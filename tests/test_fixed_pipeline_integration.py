@@ -123,3 +123,16 @@ def test_full_fixed_pipeline_offline(tmp_path, monkeypatch):
     assert [x['epoch'] for x in arm['curve']] == [1,2]
     assert arm['training']['initialization_kind'] == 'continued_diagnostic_weights'
     assert resumed['train_ids'] == fit_report['train_ids']
+
+    warm_output = tmp_path/'numeric_fit_warm'
+    monkeypatch.setattr(sys, 'argv', ['numeric_fit','--train',str(train),'--validation',str(val),
+        '--graph-checkpoint',str(gp),'--base-model',str(base_path),'--train-records','0',
+        '--validation-records','1','--epochs','1','--batch-size','1','--device','cpu',
+        '--warm-start-run',str(resume_output),'--arm','assisted','--overlength-policy','skip',
+        '--save-every-epoch','--output',str(warm_output)])
+    fit_main()
+    warm = json.loads((warm_output/'report.json').read_text())['arms']['source_assisted_DIAGNOSTIC']
+    assert warm['training_records_selected'] == 1
+    assert warm['training']['initialization_kind'] == 'continued_diagnostic_weights'
+    assert warm['length_audit']['train']['retained'] == 1
+    assert (warm_output/'source_assisted_DIAGNOSTIC'/'checkpoint_epoch_001'/'config.json').is_file()

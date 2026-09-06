@@ -8,7 +8,9 @@ from reactgdiff.pipeline.contracts import discrete_slots, requests, parameter_pr
 
 
 def prompt_lengths(tokenizer, prompts, max_length):
-    lengths = [len(ids) for ids in tokenizer(prompts, truncation=False).input_ids]
+    lengths = []
+    for start in range(0, len(prompts), 256):
+        lengths.extend(len(ids) for ids in tokenizer(prompts[start:start+256], truncation=False).input_ids)
     if lengths and max(lengths) > max_length:
         raise ValueError(f'Parameter prompt exceeds budget: max={max(lengths)}, budget={max_length}, '
                          f'over_budget={sum(n > max_length for n in lengths)}. '

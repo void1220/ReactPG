@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 from scripts.run_fixed_pipeline import indexed, digest, save
 from reactgdiff.utils.io import read_jsonl, write_jsonl
 from reactgdiff.models.graph_codec import GraphTargetCodec
-from reactgdiff.pipeline.contracts import discrete_slots, requests, parameter_prompt, parse_proposal, input_record
+from reactgdiff.pipeline.contracts import discrete_slots, requests, parameter_prompt, parse_proposal, input_record, PROMPT_VERSION
 from reactgdiff.data.numeric_evidence import numeric_candidates_from_record, normalize_unit
 from reactgdiff.pipeline.specialist import train_parameters, prompt_lengths
 
@@ -83,17 +83,25 @@ def main():
     p.add_argument('--seed', type=int, default=19)
     p.add_argument('--device', default='cuda')
     p.add_argument('--output')
+    p.add_argument('--overlength-policy', choices=['error','skip'], default='error')
+    p.add_argument('--train-eval-records', type=int, default=32)
+    p.add_argument('--save-every-epoch', action='store_true')
+    p.add_argument('--warm-start-run', help='Initialize from a previous numeric model, with new data and fresh optimizer')
     p.add_argument('--arm', choices=['both','free','assisted'], default='both')
     p.add_argument('--resume-run', help='Previous diagnostic result directory; resume weights with a fresh optimizer')
     args = p.parse_args()
     previous = None
+    if args.resume_run and args.warm_start_run:
+        p.error('Choose resume-run or warm-start-run, not both')
     if args.resume_run:
         previous = json.loads((Path(args.resume_run)/'report.json').read_text())
+        if any(a.get('training',{}).get('prompt_version') != PROMPT_VERSION for a in previous['arms'].values()):
+            p.error('Prompt version changed: use --warm-start-run for a new experiment')
         # Preserve the original experiment and samples. Only duration, arm and output change.
         for key, value in previous['config'].items():
             if key not in ('epochs','arm','resume_run','output'):
                 setattr(args, key, value)
-    if min(args.train_records,args.validation_records,args.epochs,args.batch_size,args.accumulation,args.max_length) < 1 or not math.isfinite(args.lr) or args.lr <= 0:
+    if args.train_records < 0 or min(args.train_eval_records,args.validation_records,args.epochs,args.batch_size,args.accumulation,args.max_length) < 1 or not math.isfinite(args.lr) or args.lr <= 0:
         p.error('Counts and learning rate must be positive and finite')
     train, val = list(read_jsonl(args.train)), list(read_jsonl(args.validation))
     train_index, val_index = indexed(train), indexed(val)
@@ -104,18 +112,20 @@ def main():
             raise ValueError('Expected explicit '+split+' split; test data is not allowed')
     if args.train_records > len(train) or args.validation_records > len(val):
         raise ValueError('Requested more records than available')
-    chosen_train = random.Random(args.seed).sample(train, args.train_records)
+    chosen_train = random.Random(args.seed).sample(train, args.train_records or len(train))
     chosen_val = random.Random(args.seed+1).sample(val, args.validation_records)
     payload = torch.load(args.graph_checkpoint, map_location='cpu', weights_only=False)
     codec = GraphTargetCodec.from_dict(payload['codec'])
     del payload
     output = Path(args.output or ('outputs/numeric_fit/'+datetime.now().strftime('%Y%m%d_%H%M%S_%f')))
     output.mkdir(parents=True, exist_ok=False)
-    report = {'config': vars(args), 'purpose':'diagnostic_only_gold_graphs',
+    report = {'config': vars(args), 'purpose':'diagnostic_only_gold_graphs', 'prompt_version':PROMPT_VERSION,
         'selection':'fixed_epochs_no_validation_selection',
         'limitations':['Source-assisted input may contain target procedure; never compare it as source-free performance.',
                       'Input value/unit match does not establish correct material or step binding.',
-                      'Training fit is not generalization. Gold graphs remove upstream prediction errors.'],
+                      'Training fit is not generalization. Gold graphs remove upstream prediction errors.',
+                      'Train metrics refer only to the fixed training probe, not the full training set.',
+                      'Gold material bindings are not predicted by legacy diffusion checkpoints.'],
         'train_sha256':digest(args.train), 'validation_sha256':digest(args.validation),
         'train_ids':[r['index'] for r in chosen_train], 'validation_ids':[r['index'] for r in chosen_val], 'arms':{}}
     if previous:
@@ -138,11 +148,43 @@ def main():
             if not Path(initial_model).is_dir():
                 raise FileNotFoundError(initial_model)
             print(f'Resuming {arm} from epoch {prior_epochs}; fresh optimizer', flush=True)
+        if args.warm_start_run:
+            warm = json.loads((Path(args.warm_start_run)/'report.json').read_text())
+            if set(map(str,warm.get('train_ids',[]))) & set(val_index):
+                raise ValueError('Warm-start model has validation training exposure')
+            if arm not in warm.get('arms', {}):
+                raise ValueError('Warm-start arm absent: '+arm)
+            initial_model = str(Path(args.warm_start_run)/arm/'model')
+            if not Path(initial_model).is_dir():
+                raise FileNotFoundError(initial_model)
         arm_dir = output/arm
         arm_dir.mkdir()
         training = examples_from_records(chosen_train, codec, include_source)
         validation = examples_from_records(chosen_val, codec, include_source)
-        if not training or not validation:
+        length_audit = {}
+        if args.overlength_policy == 'skip':
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(initial_model,local_files_only=True)
+            def filter_length(examples, split):
+                kept, dropped = [], []
+                for start in range(0,len(examples),256):
+                    batch = examples[start:start+256]
+                    ids = tokenizer([e['prompt'] for e in batch],truncation=False).input_ids
+                    for e,tokens in zip(batch,ids):
+                        if len(tokens) <= args.max_length:
+                            kept.append(e)
+                        else:
+                            dropped.append({'index':e['index'],'request':e['request'],'tokens':len(tokens)})
+                    if start % 10240 == 0: print(f'{arm} preflight {split} {start}/{len(examples)}',flush=True)
+                write_jsonl(arm_dir/f'{split}_overlength_exclusions.jsonl',dropped)
+                length_audit[split] = {'before':len(examples),'retained':len(kept),'excluded':len(dropped)}
+                return kept
+            training = filter_length(training,'train')
+            validation = filter_length(validation,'validation')
+            del tokenizer
+        probe_ids = {r['index'] for r in chosen_train[:args.train_eval_records]}
+        training_probe = [e for e in training if e['index'] in probe_ids]
+        if not training or not validation or not training_probe:
             raise ValueError('No numeric slots for diagnostic')
         if include_source and not any(str(r.get('source','')).strip() for r in chosen_train):
             raise ValueError('Source-assisted diagnostic requires actual source text')
@@ -151,25 +193,38 @@ def main():
         targets_by_prompt = defaultdict(set)
         for e in training:
             targets_by_prompt[e['prompt']].add(e['target'])
-        entry = {'train_examples':len(training), 'validation_examples':len(validation),
+        binding_counts = Counter(json.loads(e['prompt'].split('\n',1)[1])['requested_context']['binding'] for e in training)
+        entry = {'length_audit':length_audit, 'train_probe_examples':len(training_probe), 'train_probe_ids':list(probe_ids),
+                 'material_binding_counts':dict(binding_counts),
+                 'training_records_selected':len(chosen_train),
+                 'training_records_with_numeric_slots':len({e['index'] for e in training}),
+                 'codec_capacity':{'max_steps':codec.max_steps,'max_material_slots':codec.max_material_slots},
+                 'train_examples':len(training), 'validation_examples':len(validation),
                  'conflicting_training_prompts':sum(len(v)>1 for v in targets_by_prompt.values()), 'curve':[]}
         report['arms'][arm] = entry
         def callback(model, tokenizer, epoch, loss, steps):
-            metrics, rows = evaluate(model,tokenizer,training,args.batch_size,args.max_length,args.device)
+            metrics, rows = evaluate(model,tokenizer,training_probe,args.batch_size,args.max_length,args.device)
             point = {'epoch':prior_epochs+epoch, 'additional_epoch':epoch, 'optimizer_steps':steps, 'train_loss':loss, 'train':metrics}
             write_jsonl(arm_dir/f'train_epoch_{prior_epochs+epoch:03d}.jsonl',rows)
             if epoch in (0,args.epochs):
                 val_metrics, val_rows = evaluate(model,tokenizer,validation,args.batch_size,args.max_length,args.device)
                 point['validation'] = val_metrics
                 write_jsonl(arm_dir/f'validation_epoch_{prior_epochs+epoch:03d}.jsonl',val_rows)
+            if epoch and args.save_every_epoch:
+                snapshot = arm_dir/f'checkpoint_epoch_{prior_epochs+epoch:03d}'
+                model.save_pretrained(snapshot)
+                tokenizer.save_pretrained(snapshot)
+                save(snapshot/'diagnostic_provenance.json', {'prompt_version':PROMPT_VERSION,
+                    'epoch':prior_epochs+epoch,'train_sha256':report['train_sha256'],
+                    'include_source':include_source,'optimizer_state_saved':False})
             entry['curve'].append(point)
             save(output/'report.json',report)
             print(f'{arm} epoch={prior_epochs+epoch} steps={steps} train_valid={metrics["valid_numeric_rate"]:.3f} train_exact={metrics["numeric_exact_rate"]:.3f}', flush=True)
         entry['training'] = train_parameters(initial_model,training,arm_dir/'model',epochs=args.epochs,
             batch_size=args.batch_size,accumulation=args.accumulation,lr=args.lr,max_length=args.max_length,
             seed=args.seed,device=args.device,metadata={'diagnostic_only':True,'include_source':include_source,'prior_epochs':prior_epochs,
-                'initialization_kind':'continued_diagnostic_weights' if previous else 'original_pretrained',
-                'train_ids':report['train_ids'],'graph_input':'gold_ORACLE'},diagnostic_callback=callback)
+                'initialization_kind':'continued_diagnostic_weights' if (previous or args.warm_start_run) else 'original_pretrained',
+                'train_ids':report['train_ids'],'train_file_sha256':report['train_sha256'],'graph_input':'gold_ORACLE'},diagnostic_callback=callback)
         save(output/'report.json', report)
         gc.collect()
         if torch.cuda.is_available(): torch.cuda.empty_cache()

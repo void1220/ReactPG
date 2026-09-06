@@ -404,7 +404,9 @@ class GraphTargetCodec:
         slots: list[dict[str, Any]] = []
         numeric_candidates = self.numeric_candidates_from_record(record)
         steps = parse_action_sequence(str(record.get("actions", "")))[: self.max_steps - 1]
+        from reactgdiff.data.action_parser import quantity_material_bindings
         for step_idx, step in enumerate(steps):
+            bindings = quantity_material_bindings(step.arguments)
             quantity_slots: list[dict[str, Any]] = []
             for quantity_slot, quantity in enumerate(step.quantities[: self.max_material_slots]):
                 parsed = parse_numeric_unit(quantity)
@@ -414,6 +416,7 @@ class GraphTargetCodec:
                 quantity_slots.append(
                     {
                         "slot_id": quantity_slot,
+                        "material_ref": bindings[quantity_slot] if quantity_slot < len(bindings) else "",
                         "value": value,
                         "unit": unit,
                         "unit_type": infer_numeric_type(quantity, unit),
