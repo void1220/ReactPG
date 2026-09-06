@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 
 from reactgdiff.eval.text import corpus_text_metrics
 from reactgdiff.eval.semantic import corpus_semantic_metrics
+from reactgdiff.eval.structured import corpus_structured_metrics, VERSION
 from reactgdiff.utils.io import read_jsonl
 
 
@@ -45,6 +46,8 @@ def main() -> None:
     pairs = [(_first_present(row, PREDICTION_KEYS), _first_present(row, REFERENCE_KEYS)) for row in rows]
     metrics = corpus_text_metrics(pairs)
     metrics.update(corpus_semantic_metrics(pairs))
+    metrics.update(corpus_structured_metrics(pairs))
+    metrics["structured_metric_version"] = VERSION
     metrics["predictions"] = args.predictions
 
     output_path = Path(args.output)
