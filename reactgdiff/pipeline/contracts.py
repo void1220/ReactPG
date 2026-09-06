@@ -38,9 +38,25 @@ def requests(slots):
             for i, s in enumerate(slots) for j, q in enumerate(s['quantity_slots'])]
 
 
+PROMPT_VERSION = "compact_discrete_graph_v2"
+
+
 def parameter_prompt(record, slots, request, include_source=False):
-    # Put requested slot first so a truncated graph cannot remove its identity.
-    payload = {'request': request, 'input': input_record(record, include_source), 'discrete_steps': discrete_slots(slots)}
+    # Preserve all graph steps and input conditions without repeated JSON keys,
+    # duplicate molecule-name maps, target text, or numeric model predictions.
+    graph = [[s['operation_type'], list(s.get('material_refs') or []),
+              [q['unit'] for q in s.get('quantity_slots') or []],
+              s.get('duration_ref', ''), s.get('temperature_ref', '')] for s in slots]
+    payload = {
+        'request': request,
+        'step_columns': ['op', 'materials', 'quantity_units', 'duration', 'temperature'],
+        'steps': graph,
+        'reaction': {k: record[k] for k in ('REACTANT','PRODUCT','CATALYST','SOLVENT') if k in record},
+        'material_map': record.get('extracted_molecules') or {},
+        'duration_map': record.get('extracted_duration') or {},
+        'temperature_map': record.get('extracted_temperature') or {},
+    }
+    if include_source: payload['source'] = str(record.get('source', ''))
     return 'Predict only the numeric value in the requested unit, or ABSTAIN.\n' + json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
 
 

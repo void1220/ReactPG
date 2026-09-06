@@ -104,3 +104,26 @@ def test_malformed_external_value_is_rejected_without_crashing():
     result=fill_values(slots(),[1])
     result[0]["quantity_slots"][0]["value"]="bad"
     assert validate(record(),result,True)["status"]=="ABSTAIN"
+
+
+def test_compact_prompt_keeps_all_steps_and_requested_context():
+    sample=slots()*12
+    for i,slot in enumerate(sample): slot=dict(slot, operation_type='ADD')
+    req={'id':'11:0','step':11,'quantity':0,'unit':'g','operation':'ADD'}
+    payload=json.loads(parameter_prompt(record(),sample,req).split('\n',1)[1])
+    assert len(payload['steps'])==12
+    assert payload['request']==req
+    assert payload['material_map']==record()['extracted_molecules']
+    assert 'molecules' not in payload
+
+
+def test_over_budget_prompt_fails_instead_of_truncating():
+    from types import SimpleNamespace
+    from reactgdiff.pipeline.specialist import prompt_lengths
+    class Tokenizer:
+        def __call__(self,prompts,**kwargs):
+            assert kwargs['truncation'] is False
+            return SimpleNamespace(input_ids=[list(range(len(p))) for p in prompts])
+    assert prompt_lengths(Tokenizer(),['abcd'],4)==[4]
+    with pytest.raises(ValueError,match='Nothing was truncated'):
+        prompt_lengths(Tokenizer(),['abcde'],4)

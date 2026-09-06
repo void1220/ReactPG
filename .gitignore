@@ -40,3 +40,6 @@ outputs/experiments/*
 *.tar
 *.tar.gz
 *.zip
+
+# Local server-result inbox.
+/ubuntu/

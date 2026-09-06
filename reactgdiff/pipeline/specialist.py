@@ -4,7 +4,16 @@ import json
 import math
 import random
 from pathlib import Path
-from reactgdiff.pipeline.contracts import discrete_slots, requests, parameter_prompt, parse_proposal
+from reactgdiff.pipeline.contracts import discrete_slots, requests, parameter_prompt, parse_proposal, PROMPT_VERSION
+
+
+def prompt_lengths(tokenizer, prompts, max_length):
+    lengths = [len(ids) for ids in tokenizer(prompts, truncation=False).input_ids]
+    if lengths and max(lengths) > max_length:
+        raise ValueError(f'Parameter prompt exceeds budget: max={max(lengths)}, budget={max_length}, '
+                         f'over_budget={sum(n > max_length for n in lengths)}. '
+                         'Nothing was truncated. Increase --parameter-max-length.')
+    return lengths
 
 
 def load_skeleton(path, device='cpu'):
@@ -66,6 +75,8 @@ def train_parameters(checkpoint, examples, output, *, epochs=1, batch_size=2, ac
     del wrapper, payload
     model.config.use_cache = False
     model.gradient_checkpointing_enable()
+    lengths = prompt_lengths(tokenizer, [x['prompt'] for x in examples], max_length)
+    print(f'Parameter prompts: count={len(lengths)} max_tokens={max(lengths)} budget={max_length}; no truncation', flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     generator = torch.Generator().manual_seed(seed)
     loader = DataLoader(examples, batch_size=batch_size, shuffle=True, generator=generator, collate_fn=lambda rows: rows)
@@ -73,7 +84,7 @@ def train_parameters(checkpoint, examples, output, *, epochs=1, batch_size=2, ac
     for epoch in range(epochs):
         model.train(); optimizer.zero_grad(); total = 0.0
         for i, rows in enumerate(loader):
-            encoded = tokenizer([x['prompt'] for x in rows], padding=True, truncation=True, max_length=max_length, return_tensors='pt').to(device)
+            encoded = tokenizer([x['prompt'] for x in rows], padding=True, truncation=False, return_tensors='pt').to(device)
             labels = tokenizer(text_target=[x['target'] for x in rows], padding=True, return_tensors='pt').input_ids.to(device)
             labels[labels == tokenizer.pad_token_id] = -100
             # Correct scaling for the final incomplete accumulation group.
@@ -90,6 +101,8 @@ def train_parameters(checkpoint, examples, output, *, epochs=1, batch_size=2, ac
     model.save_pretrained(output); tokenizer.save_pretrained(output)
     info = {'initialization': str(checkpoint), 'examples': len(examples), 'epochs': epochs,
             'train_loss': losses, 'seed': seed, 'max_length': max_length,
+            'prompt_version': PROMPT_VERSION, 'prompt_max_tokens': max(lengths),
+            'prompt_mean_tokens': sum(lengths)/len(lengths),
             'selection': 'fixed_epochs_no_validation_selection', **(metadata or {})}
     (output/'parameter_training.json').write_text(json.dumps(info, indent=2), encoding='utf-8')
     del model, optimizer
@@ -105,6 +118,8 @@ class ParameterGenerator:
         self.model = AutoModelForSeq2SeqLM.from_pretrained(path, local_files_only=True).to(device).eval()
         self.device, self.batch_size, self.max_length = device, batch_size, max_length
         self.truncated_prompts = 0
+        self.prompt_count = 0
+        self.prompt_max_tokens = 0
 
     def generate(self, record, slots, include_source=False):
         import torch
@@ -112,8 +127,10 @@ class ParameterGenerator:
         raw = []
         for i in range(0, len(prompts), self.batch_size):
             batch = prompts[i:i+self.batch_size]
-            self.truncated_prompts += sum(len(ids) > self.max_length for ids in self.tokenizer(batch, truncation=False).input_ids)
-            encoded = self.tokenizer(batch, padding=True, truncation=True, max_length=self.max_length, return_tensors='pt').to(self.device)
+            lengths = prompt_lengths(self.tokenizer, batch, self.max_length)
+            self.prompt_count += len(lengths)
+            self.prompt_max_tokens = max(self.prompt_max_tokens, max(lengths, default=0))
+            encoded = self.tokenizer(batch, padding=True, truncation=False, return_tensors='pt').to(self.device)
             with torch.inference_mode():
                 result = self.model.generate(**encoded, max_new_tokens=24, num_beams=1, do_sample=False)
             raw.extend(self.tokenizer.batch_decode(result, skip_special_tokens=True))

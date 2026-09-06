@@ -22,7 +22,7 @@ from reactgdiff.data.action_parser import parse_action_sequence
 from reactgdiff.eval.structured import corpus_structured_metrics, anchors, edits, VERSION
 from reactgdiff.eval.semantic import corpus_semantic_metrics
 from reactgdiff.eval.text import corpus_text_metrics
-from reactgdiff.pipeline.contracts import input_record, discrete_slots, requests, parameter_prompt, fill_values, validate
+from reactgdiff.pipeline.contracts import input_record, discrete_slots, requests, parameter_prompt, fill_values, validate, PROMPT_VERSION
 from reactgdiff.utils.io import read_jsonl, write_jsonl
 
 
@@ -61,6 +61,7 @@ def main():
     p.add_argument('--regenerate-skeleton', action='store_true')
     p.add_argument('--parameter-model', help='Existing HF numeric model directory; otherwise train in output directory')
     p.add_argument('--parameter-train-records', type=int, default=2048)
+    p.add_argument('--parameter-max-length', type=int, default=1024)
     p.add_argument('--parameter-epochs', type=int, default=1)
     p.add_argument('--limit', type=int, default=128)
     p.add_argument('--batch-size', type=int, default=4)
@@ -74,7 +75,7 @@ def main():
     p.add_argument('--output', default=None)
     args = p.parse_args()
     if args.allow_operation_completion: p.error('Operation completion is disabled in this release')
-    if min(args.limit, args.parameter_train_records, args.parameter_epochs, args.batch_size, args.sample_steps) <= 0: p.error('Counts must be positive')
+    if min(args.limit, args.parameter_train_records, args.parameter_epochs, args.batch_size, args.sample_steps, args.parameter_max_length) <= 0: p.error('Counts must be positive')
     if not 0 <= args.quantity_threshold <= 1: p.error('Threshold must be in [0,1]')
     import torch
     from reactgdiff.models.procedure_graph_diffusion import load_procedure_graph_diffusion_checkpoint, predict_procedure_graph_diffusion_records
@@ -209,17 +210,18 @@ def main():
                 if value is not None:
                     examples.append({'prompt': parameter_prompt(r, slots, request, args.include_source), 'target': f'{value:.8g}'})
         report['parameter_training'] = train_parameters(args.skeleton_checkpoint, examples, parameter_path,
-            epochs=args.parameter_epochs, batch_size=min(args.batch_size,2), device=args.device, seed=args.seed,
+            epochs=args.parameter_epochs, batch_size=min(args.batch_size,2), device=args.device, seed=args.seed, max_length=args.parameter_max_length,
             metadata={'include_source': args.include_source, 'train_file_sha256': report['data']['train_sha256'], 'train_ids': [r['index'] for r in subset]})
     else:
         metadata_path = Path(parameter_path)/'parameter_training.json'
         if not metadata_path.is_file(): raise ValueError('Parameter model lacks training provenance')
         meta = json.loads(metadata_path.read_text())
+        if meta.get('prompt_version') != PROMPT_VERSION: raise ValueError('Parameter prompt version changed: train a new filler; do not reuse v1 checkpoint')
         if bool(meta.get('include_source')) != args.include_source: raise ValueError('Parameter model input policy mismatch')
         if set(map(str, meta.get('train_ids', []))) & set(eval_by_id): raise ValueError('Parameter model trained on validation IDs')
         report['parameter_training'] = meta
     report['timings']['parameter_training_seconds'] = time.monotonic()-tick
-    filler = ParameterGenerator(parameter_path, args.device, args.batch_size)
+    filler = ParameterGenerator(parameter_path, args.device, args.batch_size, args.parameter_max_length)
     print('[5/6] Filling, gating, compiling and running oracle controls', flush=True)
     panels = {k: [] for k in ('new_before_gate','new_after_gate','gold_skeleton_ORACLE','gold_discrete_ORACLE','gold_numeric_ORACLE','compiler_structured_ORACLE','compiler_surface_ORACLE')}
     gate_rows = []
@@ -276,6 +278,15 @@ def main():
     base_metrics = report['stages']['new_before_gate']
     report['oracle_headroom_deltas'] = {name: {k: report['stages'][name][k]-base_metrics[k] for k in ('semantic_score','levenshtein_75_rate','aligned_parameter_iou')} for name in ('gold_skeleton_ORACLE','gold_discrete_ORACLE','gold_numeric_ORACLE')}
     report['parameter_prompt_truncations'] = filler.truncated_prompts
+    report['parameter_prompts'] = {'version': PROMPT_VERSION, 'count': filler.prompt_count, 'max_tokens': filler.prompt_max_tokens}
+    quantities = [q for row in panels['new_before_gate'] for step in row['decoded_slots'] for q in step['quantity_slots']]
+    report['parameter_generation'] = {
+        'predicted_slots': len(quantities),
+        'reference_quantity_count': sum(len(s.quantities) for r in records for s in parse_action_sequence(r['actions'])),
+        'valid_numeric_outputs': sum(q.get('value') is not None for q in quantities),
+        'zero_outputs': sum(q.get('value') == 0 for q in quantities),
+        'raw_output_histogram': dict(Counter(x for row in panels['new_before_gate'] for x in row['parameter_raw'])),
+        'predicted_unit_histogram': dict(Counter(q['unit'] for q in quantities))}
     if torch.cuda.is_available(): report['gpu_peak_allocated_mib'] = torch.cuda.max_memory_allocated()/1024**2
     report['timings']['total_seconds'] = time.monotonic()-start
     save(out/'report.json',report)
